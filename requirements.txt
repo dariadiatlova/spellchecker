@@ -1,0 +1,3 @@
+pandas
+textdistance==4.2.2
+spylls==0.1.6
