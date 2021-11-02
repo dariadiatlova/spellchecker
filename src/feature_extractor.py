@@ -36,6 +36,9 @@ class FeatureExtractor:
             return np.array(["unknown"])
         return suggestions
 
+    def _rank_catboost(self, feature_vectors):
+        return np.argmax(self.classifier.predict_proba(feature_vectors)[:, 1])
+
     def validate(self, df):
         self.misspelled_words, self.target_words = self._read_df(df)
         results = np.vstack([self.misspelled_words, np.empty_like(self.misspelled_words, dtype=str), self.target_words])
@@ -44,15 +47,16 @@ class FeatureExtractor:
             suggestions = np.array(list(self.dictionary.suggest(misspelled_word)))
             suggestions = self._suggestion_check(suggestions, misspelled_word)
             feature_vectors = np.stack([self._get_features_to_rank(misspelled_word, word) for word in suggestions])
-            results[1][i] = suggestions[self.rank_catboost(feature_vectors)]
+            results[1][i] = suggestions[self._rank_catboost(feature_vectors)]
 
-        predictions = results[1, :]
-        target = results[2, :]
-        accuracy = np.where(predictions == target)[0].shape[0] / df.shape[0]
-
+        accuracy = np.where(results[1, :] == results[2, :])[0].shape[0] / df.shape[0]
         print(f"Accuracy: {accuracy}")
 
         return results
+
+    def _multirank_catboost(self, feature_vectors):
+        top_word_idx = np.stack([np.arange(len(feature_vectors)), -self.classifier.predict_proba(feature_vectors)[:, 1]])
+        return top_word_idx[1, :].argsort()
 
     def validate_accuracy_at_k(self, df, k):
         self.misspelled_words, self.target_words = self._read_df(df)
@@ -62,26 +66,19 @@ class FeatureExtractor:
             suggestions = np.array(list(self.dictionary.suggest(misspelled_word)))
             suggestions = self._suggestion_check(suggestions, misspelled_word)
             feature_vectors = np.stack([self._get_features_to_rank(misspelled_word, word) for word in suggestions])
-            suggested_words = suggestions[self.multirank_catboost(feature_vectors)[:k]]
+            suggested_words = suggestions[self._multirank_catboost(feature_vectors)[:k]]
             if target_word in suggested_words:
                 accuracy += 1
         accuracy /= df.shape[0]
 
         print(f"Accuracy: @{k}: {accuracy}.")
 
-    def multirank_catboost(self, feature_vectors):
-        results = np.stack([np.arange(len(feature_vectors)), -self.classifier.predict_proba(feature_vectors)[:, 1]])
-        return results[1, :].argsort()
-
-    def rank_catboost(self, feature_vectors):
-        return np.argmax(self.classifier.predict_proba(feature_vectors)[:, 1])
-
     def _train_catboost(self) -> CatBoostClassifier:
         train_data = np.vstack([self.positive_feature_vectors, self.negative_feature_vectors])
         train_labels = np.concatenate([np.ones(self.positive_feature_vectors.shape[0]),
                                        np.zeros(self.negative_feature_vectors.shape[0])])
         assert len(train_data) == len(train_labels), "Dimensions of train features and labels does not match!"
-        self.classifier = CatBoostClassifier(iterations=8, learning_rate=1e-3, depth=5)
+        self.classifier = CatBoostClassifier(iterations=20, learning_rate=1, depth=5, verbose=False)
         self.classifier.fit(train_data, train_labels)
         return self.classifier
 
@@ -96,14 +93,11 @@ class FeatureExtractor:
         for i, misspelled_word, target_word in zip(tqdm(np.arange(df.shape[0]), total=df.shape[0]),
                                                    self.misspelled_words, self.target_words):
             suggestions = np.array(list(self.dictionary.suggest(misspelled_word)))
-
-            wrong_predicted_word = suggestions[0]
-            if wrong_predicted_word == target_word:
-                if len(suggestions) > 1:
-                    wrong_predicted_word = suggestions[1]
-                else:
-                    wrong_predicted_word = "random"
-                    print(f"Did not find wrong suggestion for {misspelled_word} word.")
+            if len(suggestions) >= 1:
+                wrong_predicted_word = np.random.choice(suggestions)
+            else:
+                wrong_predicted_word = "random"
+                print(f"Did not find wrong suggestion for {misspelled_word} word.")
 
             self.positive_feature_vectors[i] = self._get_features_to_rank(misspelled_word, target_word)
             self.negative_feature_vectors[i] = self._get_features_to_rank(misspelled_word, wrong_predicted_word)

@@ -6,13 +6,12 @@ import nltk
 
 def filter_vocabulary():
     """
-    Function filters vocabular from words we consider incorrect and adds to the dictionary correct words from lowercase
+    Function filters vocabulary from words we consider incorrect and adds to the dictionary correct words from lowercase
     and capital letter.
     :return: list
     """
     df = pd.read_csv(DATA_ROOT_PATH / "wordlist.txt", header=None)
     wrong_words = pd.read_csv(DATA_ROOT_PATH / "test.txt", sep="\t", header=None)[0]
-    wrong_words = [w.lower() for w in wrong_words]
     wrong_words = [w.lower() for w in wrong_words]
     vocabulary = []
     for word in df[0]:
