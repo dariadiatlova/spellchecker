@@ -22,6 +22,29 @@ class FeatureExtractor:
         self.negative_feature_vectors = None
         self.classifier = None
 
+    def _initialize_model(self, model_path: str):
+        self.classifier = CatBoostClassifier()
+        self.classifier.load_model(model_path)
+
+    def predict(self, word: str, model_path: str, suggest_k_words: int):
+        # correct spelling case
+        if self.dictionary.lookup(word):
+            return "Good job! The spelling is correct!"
+
+        suggestions = np.array(list(self.dictionary.suggest(word)))
+        # unknown word case
+        if len(suggestions) < 1:
+            return word
+
+        # suggest suggest_k_words
+        self._initialize_model(model_path)
+        feature_vectors = np.stack([self._get_features_to_rank(word, suggested_word) for suggested_word in suggestions])
+        suggested_words = suggestions[self._multirank_catboost(feature_vectors)]
+        suggested_string = str(suggested_words[0])
+        for i in range(1, suggest_k_words):
+            suggested_string = suggested_string + ", " + str(suggested_words[i])
+        return f"You've probably meant: {suggested_string}?"
+
     def _get_features_to_rank(self, word_one: str, word_two: str):
         return [distance(word_one, word_two) for distance in self.distances]
 
@@ -35,6 +58,18 @@ class FeatureExtractor:
             print(f"Didn't find any similar words for '{misspelled_word}' word.")
             return np.array(["unknown"])
         return suggestions
+
+    def validate_vanilla_hunspell(self, df):
+        self.misspelled_words, self.target_words = self._read_df(df)
+        results = np.vstack([self.misspelled_words, np.empty_like(self.misspelled_words, dtype=str), self.target_words])
+        for i, misspelled_word, target_word in zip(np.arange(df.shape[0]), self.misspelled_words, self.target_words):
+            suggestions = np.array(list(self.dictionary.suggest(misspelled_word)))
+            if len(suggestions) >= 1:
+                results[1][i] = suggestions[0]
+            else:
+                results[1][i] = misspelled_word
+        accuracy = np.where(results[1, :] == results[2, :])[0].shape[0] / df.shape[0]
+        print(f"Vanilla hunspell accuracy: {accuracy}")
 
     def _rank_catboost(self, feature_vectors):
         return np.argmax(self.classifier.predict_proba(feature_vectors)[:, 1])
@@ -78,12 +113,12 @@ class FeatureExtractor:
         train_labels = np.concatenate([np.ones(self.positive_feature_vectors.shape[0]),
                                        np.zeros(self.negative_feature_vectors.shape[0])])
         assert len(train_data) == len(train_labels), "Dimensions of train features and labels does not match!"
-        self.classifier = CatBoostClassifier(iterations=20, learning_rate=1, depth=5, verbose=False)
+        self.classifier = CatBoostClassifier(iterations=25, learning_rate=1, depth=5, verbose=False)
         self.classifier.fit(train_data, train_labels)
         return self.classifier
 
-    def train(self, df: pd.DataFrame, n=1000) -> CatBoostClassifier:
-        df = df.sample(n=n)
+    def train(self, df: pd.DataFrame, train_size: int, save_model_path: str = None) -> CatBoostClassifier:
+        df = df.sample(n=train_size)
         self.misspelled_words = np.array(df["wrong"])
         self.target_words = np.array(df["correct"])
 
@@ -102,4 +137,7 @@ class FeatureExtractor:
             self.positive_feature_vectors[i] = self._get_features_to_rank(misspelled_word, target_word)
             self.negative_feature_vectors[i] = self._get_features_to_rank(misspelled_word, wrong_predicted_word)
 
-        return self._train_catboost()
+        classifier = self._train_catboost()
+        if save_model_path:
+            self.classifier.save_model(save_model_path)
+        return classifier
